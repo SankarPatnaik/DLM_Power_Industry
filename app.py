@@ -1,4 +1,5 @@
 import os
+import unicodedata
 from datetime import datetime, timedelta
 
 import importlib
@@ -6,6 +7,14 @@ import importlib.util
 
 import pandas as pd
 import streamlit as st
+
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("LANG", "en_US.UTF-8")
+os.environ.setdefault("LC_ALL", "en_US.UTF-8")
+
+litellm = importlib.import_module("litellm") if importlib.util.find_spec("litellm") else None
+if litellm:
+    litellm.set_verbose = True
 
 st.set_page_config(page_title="Agentic AI for Power Grid", layout="wide")
 
@@ -191,6 +200,28 @@ def normalize_model_name(provider: str, model_name: str) -> str:
     return f"{provider_prefix}/{cleaned}" if provider_prefix else cleaned
 
 
+def sanitize_text(text: str) -> str:
+    """Normalize Unicode punctuation and strip non-ASCII for Groq/LiteLLM safety."""
+    if text is None:
+        return text
+
+    replacements = {
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2026": "...",
+        "\xa0": " ",
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+
+    normalized = unicodedata.normalize("NFKD", text)
+    return normalized.encode("ascii", "ignore").decode("ascii")
+
+
 def build_crew(
     user_question: str,
     grid_context: str,
@@ -212,14 +243,27 @@ def build_crew(
     Task = crewai.Task
 
     normalized_model = normalize_model_name(provider, llm_model)
-    llm = LLM(model=normalized_model) if LLM else normalized_model
+    llm_kwargs = {
+        "model": normalized_model,
+        "temperature": 0.2,
+        "stream": False,
+    }
+
+    if provider == "OpenAI":
+        llm_kwargs["api_key"] = os.getenv("OPENAI_API_KEY")
+    elif provider == "Groq":
+        llm_kwargs["api_key"] = os.getenv("GROQ_API_KEY")
+
+    llm = LLM(**llm_kwargs) if LLM else normalized_model
 
     ops_agent = Agent(
-        role="Grid Operations Analyst",
-        goal="Detect what happened in the grid and identify operational root causes quickly.",
+        role=sanitize_text("Grid Operations Analyst"),
+        goal=sanitize_text("Detect what happened in the grid and identify operational root causes quickly."),
         backstory=(
-            "You are a utility control-room expert. You interpret alarms, feeder events, "
-            "and load trends to explain incidents."
+            sanitize_text(
+                "You are a utility control-room expert. You interpret alarms, feeder events, "
+                "and load trends to explain incidents."
+            )
         ),
         allow_delegation=False,
         verbose=False,
@@ -227,11 +271,13 @@ def build_crew(
     )
 
     reliability_agent = Agent(
-        role="Grid Reliability Engineer",
-        goal="Assess system risk and reliability impact from current events.",
+        role=sanitize_text("Grid Reliability Engineer"),
+        goal=sanitize_text("Assess system risk and reliability impact from current events."),
         backstory=(
-            "You specialize in N-1 reliability, contingency analysis, and outage prevention "
-            "for transmission and distribution networks."
+            sanitize_text(
+                "You specialize in N-1 reliability, contingency analysis, and outage prevention "
+                "for transmission and distribution networks."
+            )
         ),
         allow_delegation=False,
         verbose=False,
@@ -239,11 +285,13 @@ def build_crew(
     )
 
     maintenance_agent = Agent(
-        role="Asset Maintenance Planner",
-        goal="Recommend practical maintenance and mitigation actions with urgency levels.",
+        role=sanitize_text("Asset Maintenance Planner"),
+        goal=sanitize_text("Recommend practical maintenance and mitigation actions with urgency levels."),
         backstory=(
-            "You optimize utility maintenance plans using asset condition, trip history, "
-            "and operational stress indicators."
+            sanitize_text(
+                "You optimize utility maintenance plans using asset condition, trip history, "
+                "and operational stress indicators."
+            )
         ),
         allow_delegation=False,
         verbose=False,
@@ -251,7 +299,7 @@ def build_crew(
     )
 
     operations_task = Task(
-        description=(
+        description=sanitize_text(
             "Analyze the user question and grid telemetry context. "
             "Identify the most likely operational cause and supporting evidence. "
             "If question asks about previous incidents, explicitly reference failure history records.\n\n"
@@ -261,7 +309,7 @@ def build_crew(
             f"Grid Context:\n{grid_context}\n\n"
             f"Relevant Failure History:\n{failure_history_context}"
         ),
-        expected_output=(
+        expected_output=sanitize_text(
             "Concise operational diagnosis with evidence from telemetry and, when relevant,"
             " a comparison to past failure records."
         ),
@@ -269,23 +317,23 @@ def build_crew(
     )
 
     reliability_task = Task(
-        description=(
+        description=sanitize_text(
             "Using the operational diagnosis, evaluate reliability impact. "
             "Rate risk as Low/Medium/High and explain outage implications. "
             "Include how urgency should influence operator decisions."
         ),
-        expected_output="Risk rating and reliability impact summary.",
+        expected_output=sanitize_text("Risk rating and reliability impact summary."),
         agent=reliability_agent,
         context=[operations_task],
     )
 
     maintenance_task = Task(
-        description=(
+        description=sanitize_text(
             "Using previous analyses, produce an action plan with immediate (0-6h), "
             "short-term (24-48h), and follow-up actions. "
             "Add one clarifying follow-up question to keep the operator interaction going."
         ),
-        expected_output=(
+        expected_output=sanitize_text(
             "Prioritized maintenance and mitigation action plan with one follow-up question."
         ),
         agent=maintenance_agent,
@@ -375,14 +423,17 @@ if st.button("Run Multi-Agent Analysis", type="primary"):
     elif not provider_ready:
         st.error(missing_message)
     else:
-        context_text = format_context(df)
-        failure_history_context = build_failure_history_context(question, historical_df)
+        sanitized_question = sanitize_text(question)
+        context_text = sanitize_text(format_context(df))
+        failure_history_context = sanitize_text(
+            build_failure_history_context(sanitized_question, historical_df)
+        )
         crew = build_crew(
-            question,
+            sanitized_question,
             context_text,
             failure_history_context,
-            topic_focus,
-            urgency,
+            sanitize_text(topic_focus),
+            sanitize_text(urgency),
             provider,
             llm_model,
         )
