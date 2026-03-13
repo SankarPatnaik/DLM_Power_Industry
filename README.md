@@ -36,7 +36,7 @@ export VERTEXAI_LOCATION="us-central1"
 
 The app sidebar now supports switching between:
 
-- **OpenAI** (default model: `gpt-4o-mini`)
+- **OpenAI** (default model: `openai/gpt-4o-mini`)
 - **Groq** (default model: `groq/llama-3.1-70b-versatile`)
 - **Vertex AI** (default model: `vertex_ai/gemini-1.5-pro`)
 

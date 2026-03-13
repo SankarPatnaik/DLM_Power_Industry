@@ -173,12 +173,31 @@ def build_failure_history_context(user_question: str, data: pd.DataFrame, max_ro
     return "\n".join(history_lines)
 
 
+def normalize_model_name(provider: str, model_name: str) -> str:
+    """Normalize model names to provider-prefixed LiteLLM format."""
+    cleaned = model_name.strip()
+    if not cleaned:
+        return cleaned
+
+    if "/" in cleaned:
+        return cleaned
+
+    provider_prefix = {
+        "OpenAI": "openai",
+        "Groq": "groq",
+        "Vertex AI": "vertex_ai",
+    }.get(provider)
+
+    return f"{provider_prefix}/{cleaned}" if provider_prefix else cleaned
+
+
 def build_crew(
     user_question: str,
     grid_context: str,
     failure_history_context: str,
     topic_focus: str,
     urgency: str,
+    provider: str,
     llm_model: str,
 ):
     """Build an agentic CrewAI workflow for power-grid analysis."""
@@ -192,7 +211,8 @@ def build_crew(
     Process = crewai.Process
     Task = crewai.Task
 
-    llm = LLM(model=llm_model) if LLM else llm_model
+    normalized_model = normalize_model_name(provider, llm_model)
+    llm = LLM(model=normalized_model) if LLM else normalized_model
 
     ops_agent = Agent(
         role="Grid Operations Analyst",
@@ -291,7 +311,7 @@ with st.sidebar:
     )
 
     if provider == "OpenAI":
-        llm_model = st.text_input("Model", value="gpt-4o-mini")
+        llm_model = st.text_input("Model", value="openai/gpt-4o-mini")
         st.markdown("Set your OpenAI API key:")
         st.code("export OPENAI_API_KEY='your_key_here'", language="bash")
         provider_ready = bool(os.getenv("OPENAI_API_KEY"))
@@ -363,6 +383,7 @@ if st.button("Run Multi-Agent Analysis", type="primary"):
             failure_history_context,
             topic_focus,
             urgency,
+            provider,
             llm_model,
         )
 
@@ -386,8 +407,13 @@ if st.button("Run Multi-Agent Analysis", type="primary"):
                 )
             except Exception as exc:
                 st.error(
-                    "CrewAI execution failed. Confirm dependencies and API key configuration."
+                    "CrewAI execution failed. Confirm dependencies and API key/model configuration."
                 )
+                if "Fallback to LiteLLM is not available" in str(exc):
+                    st.info(
+                        "Install LiteLLM and use a provider-prefixed model name like "
+                        "`openai/gpt-4o-mini` or `groq/llama-3.1-70b-versatile`."
+                    )
                 st.exception(exc)
 
 if st.session_state.analysis_history:
