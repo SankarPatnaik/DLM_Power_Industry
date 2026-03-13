@@ -39,6 +39,49 @@ POWER_GRID_TOPICS = {
     ],
 }
 
+HISTORICAL_FAILURE_DATA = [
+    {
+        "Date": "2026-01-14 03:12",
+        "Asset": "Feeder F12",
+        "Failure_Type": "Protection Trip",
+        "Root_Cause": "Insulation degradation caused phase-to-ground fault during fog event",
+        "Contributing_Factors": "Moisture ingress, delayed cable joint replacement, high morning load ramp",
+        "Customers_Affected": 12840,
+        "Duration_Min": 96,
+        "Corrective_Action": "Replaced damaged cable section, retuned relay pickup, accelerated joint replacement backlog",
+    },
+    {
+        "Date": "2026-02-03 17:48",
+        "Asset": "Transformer T3",
+        "Failure_Type": "Thermal Overload",
+        "Root_Cause": "Cooling fan bank B failed while evening peak exceeded forecast by 11%",
+        "Contributing_Factors": "Deferred fan motor maintenance, low reactive support, sustained 97-101% loading",
+        "Customers_Affected": 9230,
+        "Duration_Min": 64,
+        "Corrective_Action": "Repaired fan bank, temporary load transfer to T4, added thermal alarm threshold at 92%",
+    },
+    {
+        "Date": "2026-02-19 11:05",
+        "Asset": "Wind Farm 2",
+        "Failure_Type": "Generation Curtailment",
+        "Root_Cause": "Converter control board fault triggered emergency shutdown",
+        "Contributing_Factors": "Harmonic distortion from nearby industrial feeder, missed firmware patch",
+        "Customers_Affected": 0,
+        "Duration_Min": 142,
+        "Corrective_Action": "Swapped control board, deployed firmware update, added power quality monitoring",
+    },
+    {
+        "Date": "2026-03-01 22:33",
+        "Asset": "Substation A",
+        "Failure_Type": "Bus Undervoltage Event",
+        "Root_Cause": "Capacitor bank breaker failed to close during contingency switching",
+        "Contributing_Factors": "Aged breaker mechanism, incomplete night-shift checklist execution",
+        "Customers_Affected": 6740,
+        "Duration_Min": 38,
+        "Corrective_Action": "Breaker overhaul, mandatory switching checklist sign-off, added remote close test",
+    },
+]
+
 # Sample operational telemetry
 sample_data = {
     "Asset": [
@@ -60,9 +103,20 @@ sample_data = {
 }
 
 df = pd.DataFrame(sample_data)
+historical_df = pd.DataFrame(HISTORICAL_FAILURE_DATA)
+historical_df["Date"] = pd.to_datetime(historical_df["Date"])
 
 with st.expander("Live Grid Snapshot", expanded=True):
     st.dataframe(df, width="stretch")
+
+with st.expander("Failure History (last 90 days)"):
+    st.caption(
+        "Synthetic incident data to let agents perform root-cause lookbacks and explain past failures."
+    )
+    st.dataframe(
+        historical_df.sort_values("Date", ascending=False).reset_index(drop=True),
+        width="stretch",
+    )
 
 
 def format_context(dataframe: pd.DataFrame) -> str:
@@ -76,7 +130,56 @@ def format_context(dataframe: pd.DataFrame) -> str:
     return "\n".join(rows)
 
 
-def build_crew(user_question: str, grid_context: str, topic_focus: str, urgency: str):
+def build_failure_history_context(user_question: str, data: pd.DataFrame, max_rows: int = 3) -> str:
+    """Return the most relevant historical incidents for the current question."""
+    lowered_question = user_question.lower()
+    scored_rows = []
+    for _, row in data.iterrows():
+        score = 0
+        text_blob = " ".join(str(value).lower() for value in row.values)
+
+        if str(row["Asset"]).lower() in lowered_question:
+            score += 5
+        if str(row["Failure_Type"]).lower() in lowered_question:
+            score += 3
+        if "past" in lowered_question or "history" in lowered_question or "previous" in lowered_question:
+            score += 2
+        if any(keyword in lowered_question for keyword in ["why", "cause", "failure", "trip"]):
+            score += 2
+        if any(token in text_blob for token in lowered_question.split()):
+            score += 1
+
+        scored_rows.append((score, row))
+
+    ranked = sorted(scored_rows, key=lambda item: (item[0], item[1]["Date"]), reverse=True)
+    top_rows = [item[1] for item in ranked[:max_rows]]
+
+    history_lines = []
+    for row in top_rows:
+        history_lines.append(
+            " | ".join(
+                [
+                    f"Date={row['Date']:%Y-%m-%d %H:%M}",
+                    f"Asset={row['Asset']}",
+                    f"FailureType={row['Failure_Type']}",
+                    f"RootCause={row['Root_Cause']}",
+                    f"ContributingFactors={row['Contributing_Factors']}",
+                    f"DurationMin={row['Duration_Min']}",
+                    f"CorrectiveAction={row['Corrective_Action']}",
+                ]
+            )
+        )
+
+    return "\n".join(history_lines)
+
+
+def build_crew(
+    user_question: str,
+    grid_context: str,
+    failure_history_context: str,
+    topic_focus: str,
+    urgency: str,
+):
     """Build an agentic CrewAI workflow for power-grid analysis."""
     if importlib.util.find_spec("crewai") is None:
         raise RuntimeError("CrewAI is not installed. Run `pip install -r requirements.txt`.")
@@ -123,13 +226,18 @@ def build_crew(user_question: str, grid_context: str, topic_focus: str, urgency:
     operations_task = Task(
         description=(
             "Analyze the user question and grid telemetry context. "
-            "Identify the most likely operational cause and supporting evidence.\n\n"
+            "Identify the most likely operational cause and supporting evidence. "
+            "If question asks about previous incidents, explicitly reference failure history records.\n\n"
             f"Topic Focus: {topic_focus}\n"
             f"Urgency: {urgency}\n\n"
             f"User Question: {user_question}\n\n"
-            f"Grid Context:\n{grid_context}"
+            f"Grid Context:\n{grid_context}\n\n"
+            f"Relevant Failure History:\n{failure_history_context}"
         ),
-        expected_output="Concise operational diagnosis with evidence from telemetry.",
+        expected_output=(
+            "Concise operational diagnosis with evidence from telemetry and, when relevant,"
+            " a comparison to past failure records."
+        ),
         agent=ops_agent,
     )
 
@@ -201,7 +309,8 @@ if st.button("Run Multi-Agent Analysis", type="primary"):
         st.error("OPENAI_API_KEY is not set. Please add your key and restart Streamlit.")
     else:
         context_text = format_context(df)
-        crew = build_crew(question, context_text, topic_focus, urgency)
+        failure_history_context = build_failure_history_context(question, historical_df)
+        crew = build_crew(question, context_text, failure_history_context, topic_focus, urgency)
 
         with st.spinner("Agents are collaborating on your request..."):
             try:
