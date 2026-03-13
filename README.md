@@ -15,14 +15,32 @@ The crew processes your question and the grid telemetry table sequentially, then
 ## Prerequisites
 
 - Python 3.10+
-- OpenAI API key
+- One provider credential set: OpenAI API key, Groq API key, or Vertex AI service account
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
 export OPENAI_API_KEY="your_openai_api_key"
+# OR
+export GROQ_API_KEY="your_groq_api_key"
+# OR
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service_account.json"
+export VERTEXAI_PROJECT="your_gcp_project_id"
+export VERTEXAI_LOCATION="us-central1"
 ```
+
+
+
+## Provider support
+
+The app sidebar now supports switching between:
+
+- **OpenAI** (default model: `gpt-4o-mini`)
+- **Groq** (default model: `groq/llama-3.1-70b-versatile`)
+- **Vertex AI** (default model: `vertex_ai/gemini-1.5-pro`)
+
+Pick a provider, set the matching environment variables, and run the analysis.
 
 ## Run
 
