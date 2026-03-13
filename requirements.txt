@@ -1,6 +1,7 @@
 streamlit
 pandas
 crewai
+litellm
 openai
 groq
 google-cloud-aiplatform
