@@ -179,6 +179,7 @@ def build_crew(
     failure_history_context: str,
     topic_focus: str,
     urgency: str,
+    llm_model: str,
 ):
     """Build an agentic CrewAI workflow for power-grid analysis."""
     if importlib.util.find_spec("crewai") is None:
@@ -187,8 +188,11 @@ def build_crew(
     crewai = importlib.import_module("crewai")
     Agent = crewai.Agent
     Crew = crewai.Crew
+    LLM = getattr(crewai, "LLM", None)
     Process = crewai.Process
     Task = crewai.Task
+
+    llm = LLM(model=llm_model) if LLM else llm_model
 
     ops_agent = Agent(
         role="Grid Operations Analyst",
@@ -199,6 +203,7 @@ def build_crew(
         ),
         allow_delegation=False,
         verbose=False,
+        llm=llm,
     )
 
     reliability_agent = Agent(
@@ -210,6 +215,7 @@ def build_crew(
         ),
         allow_delegation=False,
         verbose=False,
+        llm=llm,
     )
 
     maintenance_agent = Agent(
@@ -221,6 +227,7 @@ def build_crew(
         ),
         allow_delegation=False,
         verbose=False,
+        llm=llm,
     )
 
     operations_task = Task(
@@ -275,8 +282,48 @@ def build_crew(
 
 with st.sidebar:
     st.header("Configuration")
-    st.markdown("Set your OpenAI API key as an environment variable before running:")
-    st.code("export OPENAI_API_KEY='your_key_here'", language="bash")
+
+    provider = st.selectbox(
+        "LLM provider",
+        ["OpenAI", "Groq", "Vertex AI"],
+        index=0,
+        help="Choose the provider you have credentials for.",
+    )
+
+    if provider == "OpenAI":
+        llm_model = st.text_input("Model", value="gpt-4o-mini")
+        st.markdown("Set your OpenAI API key:")
+        st.code("export OPENAI_API_KEY='your_key_here'", language="bash")
+        provider_ready = bool(os.getenv("OPENAI_API_KEY"))
+        missing_message = "OPENAI_API_KEY is not set. Please add your key and restart Streamlit."
+    elif provider == "Groq":
+        llm_model = st.text_input("Model", value="groq/llama-3.1-70b-versatile")
+        st.markdown("Set your Groq key:")
+        st.code("export GROQ_API_KEY='your_key_here'", language="bash")
+        provider_ready = bool(os.getenv("GROQ_API_KEY"))
+        missing_message = "GROQ_API_KEY is not set. Please add your key and restart Streamlit."
+    else:
+        llm_model = st.text_input("Model", value="vertex_ai/gemini-1.5-pro")
+        st.markdown("Set your Vertex AI credentials:")
+        st.code(
+            "\n".join(
+                [
+                    "export GOOGLE_APPLICATION_CREDENTIALS='/path/to/service_account.json'",
+                    "export VERTEXAI_PROJECT='your_gcp_project_id'",
+                    "export VERTEXAI_LOCATION='us-central1'",
+                ]
+            ),
+            language="bash",
+        )
+        provider_ready = bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS")) and bool(
+            os.getenv("VERTEXAI_PROJECT")
+        )
+        missing_message = (
+            "Vertex AI credentials are not fully set. "
+            "Expected GOOGLE_APPLICATION_CREDENTIALS and VERTEXAI_PROJECT "
+            "(optional: VERTEXAI_LOCATION)."
+        )
+
     st.caption("CrewAI will use your configured LLM provider credentials.")
 
     st.markdown("---")
@@ -305,12 +352,19 @@ if "analysis_history" not in st.session_state:
 if st.button("Run Multi-Agent Analysis", type="primary"):
     if not question.strip():
         st.warning("Please enter a question first.")
-    elif not os.getenv("OPENAI_API_KEY"):
-        st.error("OPENAI_API_KEY is not set. Please add your key and restart Streamlit.")
+    elif not provider_ready:
+        st.error(missing_message)
     else:
         context_text = format_context(df)
         failure_history_context = build_failure_history_context(question, historical_df)
-        crew = build_crew(question, context_text, failure_history_context, topic_focus, urgency)
+        crew = build_crew(
+            question,
+            context_text,
+            failure_history_context,
+            topic_focus,
+            urgency,
+            llm_model,
+        )
 
         with st.spinner("Agents are collaborating on your request..."):
             try:
